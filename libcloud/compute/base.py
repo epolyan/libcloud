@@ -333,7 +333,7 @@ class NodeDriver(object):
 
     NODE_STATE_MAP = {}
 
-    def __init__(self, key, secret=None, secure=True, host=None, port=None):
+    def __init__(self, key, secret=None, secure=True, host=None, port=None, *args):
         """
         @keyword    key:    API key or username to used
         @type       key:    str
@@ -354,20 +354,21 @@ class NodeDriver(object):
         self.key = key
         self.secret = secret
         self.secure = secure
-        args = [self.key]
 
-        if self.secret != None:
-            args.append(self.secret)
+        args_list = []
+        args_list.append(self.key)
 
-        args.append(secure)
+        args_list.append(self.secret)
 
-        if host != None:
-            args.append(host)
+        args_list.append(secure)
 
-        if port != None:
-            args.append(port)
+        args_list.append(host)
 
-        self.connection = self.connectionCls(*args)
+        args_list.append(port)
+
+        args_list += args
+
+        self.connection = self.connectionCls(*args_list)
 
         self.connection.driver = self
         self.connection.connect()
