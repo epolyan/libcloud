@@ -15,13 +15,17 @@
 """
 OpenStack driver
 """
-import os
+import logging
+import httplib
+from urlparse import urlparse
 
-from libcloud.common.base import Response
-from libcloud.common.types import MalformedResponseError
+from libcloud.common.base import Response, ConnectionUserAndKey
+from libcloud.common.types import MalformedResponseError, InvalidCredsError
 from libcloud.compute.types import NodeState, Provider
 from libcloud.compute.base import NodeDriver, Node
 from libcloud.compute.base import NodeSize, NodeImage, NodeLocation
+
+logger = logging.getLogger(__name__)
 
 class OpenStackResponse(Response):
 
@@ -35,10 +39,7 @@ class OpenStackResponse(Response):
         try:
             body = ET.XML(self.body)
         except:
-            raise MalformedResponseError(
-                "Failed to parse JSON",
-                body=self.body,
-                driver=OpenStackNodeDriver)
+            raise MalformedResponseError("Failed to parse XML", body=self.body, driver=OpenStackNodeDriver)
         return body
     def parse_error(self):
         try:
@@ -54,34 +55,83 @@ class OpenStackResponse(Response):
             text = self.body
         return '%s %s %s' % (self.status, self.error, text)
 
-
-class OpenStackConnection(RackspaceBaseConnection):
+class OpenStackConnection(ConnectionUserAndKey):
     """
-    Connection class for the Rackspace driver
+    Connection class for the Openstack driver
     """
 
-    responseCls = RackspaceResponse
-    auth_host = AUTH_HOST_US
+    responseCls = OpenStackResponse
     _url_key = "server_url"
 
-    def __init__(self, user_id, key, secure=True):
-        super(RackspaceConnection, self).__init__(user_id, key, secure)
-        self.api_version = 'v1.0'
+    def __init__(self, user_id, key, secure=False, host=None, port=None, url=None):
+        logger.debug('OpenStackConnection: user_id %s, key %s, secure %s, host %s, port %s, url %s',
+                     user_id, key, secure, host, port, url)
+
+        def parse_url(url):
+            if url is None:
+                raise ValueError('Missing mandatory URL field')
+            res = urlparse(url)
+            return (res.hostname, res.port, res.path)
+
+        self.server_url = ''
+        self.auth_token = ''
+        if url:
+            (host, port, self.server_url) = parse_url(url)
+
+        super(OpenStackConnection, self).__init__(user_id, key, secure, host, port)
+
+        self.api_version = 'v1.1'
         self.accept_format = 'application/xml'
+
+    def request_auth_token(self):
+        # Initial connection used for authentication
+        conn = self.conn_classes[self.secure](self.host, self.port[self.secure])
+        conn.request(
+            method='POST',
+            url='/%s' % self.api_version,
+            headers={
+                'X-Auth-User': self.user_id,
+                'X-Auth-Key': self.key
+            }
+        )
+
+        resp = conn.getresponse()
+
+        if resp.status < 200 or resp.status > 299:
+            raise InvalidCredsError()
+
+        headers = dict(resp.getheaders())
+
+        try:
+            self.auth_token = headers['x-auth-token']
+        except KeyError:
+            raise InvalidCredsError()
+
+        conn.close()
+
+
+    def add_default_headers(self, headers):
+        headers['X-Auth-Token'] = self.auth_token
+        headers['Accept'] = self.accept_format
+        return headers
 
     def request(self, action, params=None, data='', headers=None, method='GET'):
         if not headers:
             headers = {}
         if not params:
             params = {}
-        # Due to first-run authentication request, we may not have a path
+        # Due to first-run authentication request, we may not have a token
+        if not self.auth_token:
+            self.request_auth_token()
+
         if self.server_url:
             action = self.server_url + action
         if method in ("POST", "PUT"):
             headers = {'Content-Type': 'application/xml; charset=UTF-8'}
         if method == "GET":
-            params['cache-busting'] = os.urandom(8).encode('hex')
-        return super(RackspaceConnection, self).request(
+            #params['cache-busting'] = os.urandom(8).encode('hex')
+            pass
+        return super(OpenStackConnection, self).request(
             action=action,
             params=params, data=data,
             method=method, headers=headers
@@ -113,6 +163,16 @@ class OpenStackNodeDriver(NodeDriver):
     api_name = 'openstack'
     name = 'Openstack'
 
+    def __init__(self, key, secret=None, secure=False, host=None, port=None, url=None):
+
+        logger.debug('OpenStackNodeDriver: key %s, secret %s, secure %s, host %s, port %s, url %s',
+                     key, secret, secure, host, port, url)
+
+        if not secret:
+            # Workaround for bug in super.__init__ (case we have any parameter after secret)
+            secret = True
+
+        super(OpenStackNodeDriver, self).__init__(key, secret, secure, host, port, url)
 
     features = {"create_node": ["generates_password"]}
 
@@ -122,6 +182,7 @@ class OpenStackNodeDriver(NodeDriver):
                        'SUSPENDED': NodeState.TERMINATED,
                        'QUEUE_RESIZE': NodeState.PENDING,
                        'PREP_RESIZE': NodeState.PENDING,
+                       'RESIZE': NodeState.PENDING,
                        'VERIFY_RESIZE': NodeState.RUNNING,
                        'PASSWORD': NodeState.PENDING,
                        'RESCUE': NodeState.PENDING,
@@ -131,6 +192,7 @@ class OpenStackNodeDriver(NodeDriver):
                        'DELETE_IP': NodeState.PENDING,
                        'UNKNOWN': NodeState.UNKNOWN}
 
+    #TODO: implement paginated list retrieving
     def list_nodes(self):
         return self._to_nodes(self.connection.request('/servers/detail').object)
 
@@ -146,7 +208,7 @@ class OpenStackNodeDriver(NodeDriver):
         Locations cannot be set or retrieved via the API, but currently
         there are two locations, DFW and ORD.
         """
-        return [NodeLocation(0, "Rackspace DFW1/ORD1", 'US', self)]
+        raise NotImplementedError
 
     def _change_password_or_name(self, node, name=None, password=None):
         uri = '/servers/%s' % (node.id)
@@ -376,10 +438,9 @@ class OpenStackNodeDriver(NodeDriver):
                  private_ip=private_ip,
                  driver=self.connection.driver,
                  extra={
-                    'password': el.get('adminPass'),
-                    'hostId': el.get('hostId'),
-                    'imageId': el.get('imageId'),
-                    'flavorId': el.get('flavorId'),
+                    'hostId': el.get('id'),
+                    'imageRef': el.get('imageRef'),
+                    'flavorRef': el.get('flavorRef'),
                     'uri': "https://%s%s/servers/%s" % (
                          self.connection.host,
                          self.connection.request_path, el.get('id')),

@@ -57,7 +57,7 @@ def main(argv):
 
     import os
     try:
-        open_stack = OpenStackDriver(key=os.environ['NOVA_USERNAME'], url=os.environ['NOVA_URL'])
+        open_stack = OpenStackDriver(key=os.environ['NOVA_USERNAME'], secret=os.environ['NOVA_API_KEY'], url=os.environ['NOVA_URL'])
         print ">> Loading nodes..."
         nodes = open_stack.list_nodes()
         pprint(nodes)
