@@ -22,11 +22,20 @@
 # See docstrings for usage examples.
 #
 import sys
+from pretty import pprint
+import logging
+
+from libcloud.common.base import ConnectionKey, LoggingHTTPConnection, LoggingHTTPSConnection
 
 from libcloud.compute.types import Provider
-from libcloud.providers import get_driver
+from libcloud.compute.providers import get_driver
 
-from pretty import pprint
+fh = logging.StreamHandler()
+fh.setLevel(logging.DEBUG)
+logging.getLogger().addHandler(fh)
+logging.getLogger().setLevel(logging.DEBUG)
+
+logger = logging.getLogger(__name__)
 
 def main(argv):
     """Main OpenStack Demo
@@ -42,21 +51,23 @@ def main(argv):
     - Destroy it
     """
 
+
+
     OpenStackDriver = get_driver(Provider.OPENSTACK)
 
     import os
     try:
-        open_stack = OpenStackDriver(os.environ['NOVA_API_KEY'], os.environ['NOVA_USERNAME'], os.environ['NOVA_URL'])
+        open_stack = OpenStackDriver(key=os.environ['NOVA_USERNAME'], url=os.environ['NOVA_URL'])
         print ">> Loading nodes..."
         nodes = open_stack.list_nodes()
         pprint(nodes)
     except NameError, e:
         print ">> Fatal Error: %s" % e
         print "   (Hint: modify secrets.py.dist)"
-        return 1
+        raise
     except Exception, e:
         print ">> Fatal error: %s" % e
-        return 1
+        raise
 
     print ">> Loading images... (showing up to 10)"
     images = open_stack.list_images()
